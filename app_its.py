@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 1️⃣ Cấu hình cơ bản
 # ====================================================
 st.set_page_config(page_title="ITS - Pothole Detection", layout="wide")
-st.title("🚗 Pothole Detection (YOLOv8 - 8-Core CPU Optimized)")
+st.title("🚗 Pothole Detection (YOLOv8 - 8-Core CPU Optimized1)")
 st.caption("⚙️ Ultra-optimized for CPU: multi-threaded inference, frame skipping, and async display.")
 
 # ====================================================
