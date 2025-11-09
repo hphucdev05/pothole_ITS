@@ -1,4 +1,7 @@
 import streamlit as st
+st.set_page_config(page_title="ITS - Pothole Detection", layout="wide")
+
+import streamlit as st
 from ultralytics import YOLO
 import tempfile
 import json
