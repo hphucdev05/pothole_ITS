@@ -28,7 +28,6 @@ if "firebase" not in st.session_state:
 # --------------------------
 # 2️⃣ Streamlit UI
 # --------------------------
-st.set_page_config(page_title="ITS - Pothole Detection", layout="wide")
 st.title("🚗 Pothole Detection System (YOLOv8 - Streamlit, Firebase)")
 st.write("Upload a road video and watch potholes detected live — just like a camera feed!")
 
