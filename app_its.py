@@ -1,7 +1,6 @@
 import streamlit as st
 st.set_page_config(page_title="ITS - Pothole Detection", layout="wide")
 
-import streamlit as st
 from ultralytics import YOLO
 import tempfile
 import json
@@ -9,17 +8,22 @@ import firebase_admin
 from firebase_admin import credentials, storage, firestore
 import datetime
 import os
+import time
 
 # --------------------------
-# 1️⃣ Firebase setup
+# 1️⃣ Firebase setup (fix double init + bucket not found)
 # --------------------------
 if "firebase" not in st.session_state:
     try:
         firebase_key = json.loads(st.secrets["FIREBASE_KEY"])
         cred = credentials.Certificate(firebase_key)
-        firebase_admin.initialize_app(cred, {
-            'storageBucket': f"{firebase_key['project_id']}.appspot.com"
-        })
+
+        # 👉 Ghi TÊN BUCKET thật (đã tạo trong Firebase Storage)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': 'potholefirebase-a4077.appspot.com'
+            })
+
         st.session_state["firebase"] = True
         st.sidebar.success("Firebase connected ✅")
     except Exception as e:
@@ -28,7 +32,7 @@ if "firebase" not in st.session_state:
 # --------------------------
 # 2️⃣ Streamlit UI
 # --------------------------
-st.title("🚗 Pothole Detection System (YOLOv8 - Streamlit, Firebase)")
+st.title("🚗 Pothole Detection System (YOLOv8 - Streamlit + Firebase)")
 st.write("Upload a road video and watch potholes detected live — just like a camera feed!")
 
 uploaded_video = st.file_uploader("🎥 Upload road video", type=["mp4", "mov", "avi", "mkv"])
@@ -59,13 +63,15 @@ if uploaded_video is not None:
     pothole_count = 0
     frame_count = 0
 
-    # ✅ Stream mode — faster, smoother
+    # ✅ Stream mode — smoother visualization
     for r in model.predict(video_path, conf=conf, stream=True, verbose=False):
         annotated_frame = r.plot()
         pothole_count += len(r.boxes)
         frame_count += 1
+
         stframe.image(annotated_frame, channels="BGR", use_column_width=True)
         fps_display.markdown(f"**Processed frames:** {frame_count}")
+        time.sleep(0.02)  # 👈 thêm delay để hiển thị mượt
 
     st.success(f"✅ Detection complete! {pothole_count} potholes found in {frame_count} frames.")
 
