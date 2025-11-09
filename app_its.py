@@ -1,16 +1,19 @@
 import streamlit as st
-import cv2, tempfile, json, os, datetime, time
+import cv2
+import tempfile
 from ultralytics import YOLO
+import json
 import firebase_admin
 from firebase_admin import credentials, storage, firestore
-from concurrent.futures import ThreadPoolExecutor
+import datetime, os, time
 
 # ----------------------------------------------------
-# 1️⃣ Cấu hình cơ bản
+# 1️⃣ Setup Streamlit sớm nhất
 # ----------------------------------------------------
 st.set_page_config(page_title="ITS - Pothole Detection", layout="wide")
-st.title("🚗 Pothole Detection (YOLOv8 - 8-Core CPU Optimized)")
-st.write("⚙️ Optimized for CPU - parallel inference, skip frames, and low latency display.")
+
+st.title("🚗 Pothole Detection (YOLOv8 - Streamlit, CPU Optimized)")
+st.write("Upload a road video and watch potholes detected live — optimized for CPU ⚙️")
 
 # ----------------------------------------------------
 # 2️⃣ Firebase (optional)
@@ -34,67 +37,53 @@ uploaded_video = st.file_uploader("🎥 Upload road video", type=["mp4", "mov", 
 conf = st.slider("Detection Confidence", 0.1, 1.0, 0.4, 0.05)
 
 # ----------------------------------------------------
-# 4️⃣ Load YOLO model (nhẹ và ép CPU)
+# 4️⃣ Load YOLO model (cache + force CPU)
 # ----------------------------------------------------
 @st.cache_resource
 def load_model():
-    model = YOLO("yolov8n.pt")  # model nhẹ nhất
+    model = YOLO("best.pt")
     model.to("cpu")
     return model
 
 model = load_model()
 
+# OpenCV optimization
 cv2.setUseOptimized(True)
-cv2.setNumThreads(8)  # full 8 core
+cv2.setNumThreads(2)
 
 # ----------------------------------------------------
-# 5️⃣ Ultra-fast Detection Loop (multi-threaded)
+# 5️⃣ Detection loop (ultra-turbo)
 # ----------------------------------------------------
 if uploaded_video:
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(uploaded_video.read())
     video_path = tfile.name
 
-    cap = cv2.VideoCapture(video_path)
     stframe = st.empty()
     fps_box = st.empty()
     info_box = st.empty()
 
-    skip = 2           # skip every 2 frames
+    skip = 2   # skip every 2 frames
     frame_count = pothole_count = 0
     start = time.time()
 
-    executor = ThreadPoolExecutor(max_workers=4)  # parallel inference
-    futures = []
-
-    def process_frame(frame):
-        results = model.predict(frame, conf=conf, imgsz=320, verbose=False)[0]
-        return results.plot(), len(results.boxes)
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
+    # Stream detection (no full load)
+    for r in model.predict(video_path, conf=conf, stream=True, imgsz=320, verbose=False):
         frame_count += 1
         if frame_count % skip != 0:
             continue
 
-        frame_resized = cv2.resize(frame, (640, 360))
-        futures.append(executor.submit(process_frame, frame_resized))
+        annotated_frame = r.plot()
+        pothole_count += len(r.boxes)
 
-        # Giới hạn batch song song tránh nghẽn CPU
-        if len(futures) > 2:
-            done = futures.pop(0).result()
-            annotated_frame, detections = done
-            pothole_count += detections
-            stframe.image(annotated_frame, channels="BGR", use_column_width=True)
+        # Resize for display (faster render)
+        annotated_frame = cv2.resize(annotated_frame, (480, 270))
+        stframe.image(annotated_frame, channels="BGR", use_column_width=True)
 
-            fps = frame_count / (time.time() - start)
-            fps_box.markdown(f"**⚡ FPS:** {fps:.2f}")
-            info_box.info(f"Detected potholes: {pothole_count}")
+        fps = frame_count / (time.time() - start)
+        fps_box.markdown(f"**⚡ FPS:** {fps:.2f}")
+        info_box.info(f"Detected potholes: {pothole_count}")
 
-    cap.release()
     st.success(f"✅ Done! {pothole_count} potholes found in {frame_count} frames.")
 
     # ----------------------------------------------------
