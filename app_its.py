@@ -1,108 +1,125 @@
 import streamlit as st
-import tempfile
-import os
-import cv2
-import json
-import firebase_admin
-from firebase_admin import credentials, storage
+import cv2, tempfile, json, os, datetime, time
 from ultralytics import YOLO
-import time
-import numpy as np
+import firebase_admin
+from firebase_admin import credentials, storage, firestore
+from concurrent.futures import ThreadPoolExecutor
 
-# --- PAGE CONFIG ---
+# ----------------------------------------------------
+# 1️⃣ Cấu hình cơ bản
+# ----------------------------------------------------
 st.set_page_config(page_title="ITS - Pothole Detection", layout="wide")
+st.title("🚗 Pothole Detection (YOLOv8 - 8-Core CPU Optimized)")
+st.write("⚙️ Optimized for CPU - parallel inference, skip frames, and low latency display.")
 
-# --- SIDEBAR ---
-st.sidebar.title("⚙️ Settings")
-confidence = st.sidebar.slider("Confidence Threshold", 0.1, 1.0, 0.4)
-speed_boost = st.sidebar.toggle("⚡ Boost speed (skip frames)", value=True)
-
-# --- FIREBASE INIT ---
+# ----------------------------------------------------
+# 2️⃣ Firebase (optional)
+# ----------------------------------------------------
 if "firebase" not in st.session_state:
     try:
         firebase_key = json.loads(st.secrets["FIREBASE_KEY"])
         cred = credentials.Certificate(firebase_key)
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred, {
-                'storageBucket': f"{firebase_key['project_id']}.appspot.com"
-            })
+        firebase_admin.initialize_app(cred, {
+            'storageBucket': f"{firebase_key['project_id']}.appspot.com"
+        })
         st.session_state["firebase"] = True
-        st.sidebar.success("✅ Firebase connected")
+        st.sidebar.success("Firebase connected ✅")
     except Exception as e:
         st.sidebar.warning(f"⚠️ Firebase chưa cấu hình đúng: {e}")
 
-# --- YOLO MODEL ---
+# ----------------------------------------------------
+# 3️⃣ Upload + Confidence
+# ----------------------------------------------------
+uploaded_video = st.file_uploader("🎥 Upload road video", type=["mp4", "mov", "avi", "mkv"])
+conf = st.slider("Detection Confidence", 0.1, 1.0, 0.4, 0.05)
+
+# ----------------------------------------------------
+# 4️⃣ Load YOLO model (nhẹ và ép CPU)
+# ----------------------------------------------------
 @st.cache_resource
 def load_model():
-    model = YOLO("best.pt")
-    model.to("cpu")  # Force CPU mode
+    model = YOLO("yolov8n.pt")  # model nhẹ nhất
+    model.to("cpu")
     return model
 
 model = load_model()
 
-# --- MAIN ---
-st.title("🕳️ Pothole Detection (Optimized CPU Version)")
-uploaded_video = st.file_uploader("📹 Upload a road video", type=["mp4", "mov", "avi", "mkv"])
+cv2.setUseOptimized(True)
+cv2.setNumThreads(8)  # full 8 core
 
+# ----------------------------------------------------
+# 5️⃣ Ultra-fast Detection Loop (multi-threaded)
+# ----------------------------------------------------
 if uploaded_video:
-    tfile = tempfile.NamedTemporaryFile(delete=False)
+    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(uploaded_video.read())
+    video_path = tfile.name
 
-    cap = cv2.VideoCapture(tfile.name)
-    frame_placeholder = st.empty()
-    progress = st.progress(0)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_count = 0
-    detected_count = 0
+    cap = cv2.VideoCapture(video_path)
+    stframe = st.empty()
+    fps_box = st.empty()
+    info_box = st.empty()
 
-    start_time = time.time()
+    skip = 2           # skip every 2 frames
+    frame_count = pothole_count = 0
+    start = time.time()
 
-    st.info("🚀 Detecting potholes... Please wait.")
+    executor = ThreadPoolExecutor(max_workers=4)  # parallel inference
+    futures = []
+
+    def process_frame(frame):
+        results = model.predict(frame, conf=conf, imgsz=320, verbose=False)[0]
+        return results.plot(), len(results.boxes)
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-        frame_count += 1
 
-        # Skip frames for speed boost
-        if speed_boost and frame_count % 2 != 0:
+        frame_count += 1
+        if frame_count % skip != 0:
             continue
 
-        # Resize smaller for faster inference
-        frame_resized = cv2.resize(frame, (480, 270))
+        frame_resized = cv2.resize(frame, (640, 360))
+        futures.append(executor.submit(process_frame, frame_resized))
 
-        # Predict
-        results = model.predict(frame_resized, conf=confidence, imgsz=480, verbose=False)
-        annotated = results[0].plot()
+        # Giới hạn batch song song tránh nghẽn CPU
+        if len(futures) > 2:
+            done = futures.pop(0).result()
+            annotated_frame, detections = done
+            pothole_count += detections
+            stframe.image(annotated_frame, channels="BGR", use_column_width=True)
 
-        # Count potholes
-        detected_count += len(results[0].boxes)
-
-        # Show every 3 frames (reduce Streamlit UI lag)
-        if frame_count % 3 == 0:
-            frame_placeholder.image(annotated, channels="BGR", use_column_width=True)
-
-        progress.progress(min(frame_count / total_frames, 1.0))
+            fps = frame_count / (time.time() - start)
+            fps_box.markdown(f"**⚡ FPS:** {fps:.2f}")
+            info_box.info(f"Detected potholes: {pothole_count}")
 
     cap.release()
-    end_time = time.time()
-    elapsed = end_time - start_time
+    st.success(f"✅ Done! {pothole_count} potholes found in {frame_count} frames.")
 
-    st.success(f"✅ Detection complete! {detected_count} potholes found in {frame_count} frames.")
-    st.write(f"⏱️ Processing time: {elapsed:.1f}s (~{frame_count/elapsed:.1f} FPS)")
+    # ----------------------------------------------------
+    # 6️⃣ Upload video + metadata to Firebase (optional)
+    # ----------------------------------------------------
+    try:
+        bucket = storage.bucket()
+        blob = bucket.blob(f"videos/{os.path.basename(video_path)}")
+        blob.upload_from_filename(video_path)
+        blob.make_public()
+        video_url = blob.public_url
 
-    # Upload summary to Firebase (optional)
-    if "firebase" in st.session_state:
-        try:
-            bucket = storage.bucket()
-            blob = bucket.blob(f"reports/{uploaded_video.name}_summary.txt")
-            blob.upload_from_string(
-                f"Potholes detected: {detected_count}\nFrames processed: {frame_count}\nFPS: {frame_count/elapsed:.1f}",
-                content_type="text/plain"
-            )
-            st.success("📤 Uploaded detection summary to Firebase Storage!")
-        except Exception as e:
-            st.warning(f"⚠️ Firebase upload failed: {e}")
+        db = firestore.client()
+        db.collection("detections").add({
+            "filename": os.path.basename(video_path),
+            "potholes_detected": pothole_count,
+            "frames": frame_count,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "video_url": video_url
+        })
 
-    os.remove(tfile.name)
+        st.success(f"☁️ Uploaded to Firebase! [Open video]({video_url})")
+    except Exception as e:
+        st.warning(f"Firebase upload failed: {e}")
+
+    os.unlink(video_path)
+else:
+    st.info("👆 Please upload a video to start detection.")
