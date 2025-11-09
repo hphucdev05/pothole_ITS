@@ -1,7 +1,7 @@
-echo "streamlit
-opencv-python-headless
-ultralytics
-gpxpy
-numpy
-pandas
-firebase-admin" > requirements.txt
+streamlit==1.40.1
+ultralytics==8.3.16
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+gpxpy==1.6.2
+firebase-admin==6.5.0
+Pillow==10.4.0
