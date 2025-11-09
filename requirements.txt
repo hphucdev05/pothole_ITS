@@ -1,0 +1,7 @@
+echo "streamlit
+opencv-python-headless
+ultralytics
+gpxpy
+numpy
+pandas
+firebase-admin" > requirements.txt
